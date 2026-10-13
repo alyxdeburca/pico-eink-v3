@@ -60,13 +60,18 @@ TEXT_FILE = "/display.txt"
 FRAME_FILE = "/frame.raw"
 PREF_FILE = "/boot.pref"
 ROT_FILE = "/rot.cfg"
+FAST_FILE = "/fast.cfg"
 DEFAULT_ROT = 270  # damaged panel edge moved out of the way; see README
 ROTATIONS = (0, 90, 180, 270)
+FULL_EVERY = 10    # partial renders between automatic full (ghost-clear) refreshes
 
 epd = None
 last = None  # ("text", str, x, y) or ("frame", bytes)
 rot = DEFAULT_ROT
 LW, LH = PANEL_W, PANEL_H  # logical (content) dimensions; set by set_rot()
+fast = True      # partial (0.35s) refresh instead of full (~1.5s)
+partials = 0     # partial renders since the last full refresh
+rendered_once = False  # False until a full refresh has synced the panel RAM
 
 
 def set_rot(n):
@@ -97,6 +102,41 @@ def save_rot():
         pass
 
 
+def load_fast():
+    global fast
+    try:
+        with open(FAST_FILE) as f:
+            fast = f.read().strip().upper() != "OFF"
+    except OSError:
+        pass
+
+
+def save_fast():
+    try:
+        with open(FAST_FILE, "w") as f:
+            f.write("ON" if fast else "OFF")
+    except OSError:
+        pass
+
+
+def show_buffer():
+    """Refresh the panel with epd.buffer, choosing partial vs full.
+
+    Partial (0.35s, no flash) whenever fast mode is on and the panel
+    RAM is in sync; every FULL_EVERY partials (and after boot/INIT/
+    CLEAR) a full refresh keeps ghosting in check.
+    """
+    global partials, rendered_once
+    if fast and rendered_once and partials < FULL_EVERY:
+        epd.display(partial=True)
+        partials += 1
+    else:
+        epd.display(partial=False)
+        partials = 0
+        rendered_once = True
+    gc.collect()
+
+
 class RotPainter:
     """set_pixel() shim: maps logical (x, y) onto the physical panel.
 
@@ -123,7 +163,7 @@ def render_text(text, x=TEXT_X, y=TEXT_Y):
     text = text.upper()
     epd.clear()
     draw_text(RotPainter(epd), text, x, y, size=1, width=LW)
-    epd.display()
+    show_buffer()
     last = ("text", text, x, y)
 
 
@@ -159,8 +199,65 @@ def blit_frame(data):
 def render_frame(data):
     global last
     epd.buffer = blit_frame(data)
-    epd.display()
+    show_buffer()
     last = ("frame", data)
+
+
+def _hline(p, x0, x1, y):
+    for x in range(x0, x1 + 1):
+        p.set_pixel(x, y, 1)
+
+
+def _vline(p, y0, y1, x):
+    for y in range(y0, y1 + 1):
+        p.set_pixel(x, y, 1)
+
+
+def _center_x(text, size):
+    return (LW - len(text) * 6 * size) // 2
+
+
+def draw_splash():
+    """Boot splash describing the project, shown when nothing was SAVEd."""
+    p = RotPainter(epd)
+    epd.clear()
+    # double frame
+    for i in range(3):
+        _hline(p, 5 + i, LW - 6 - i, 5 + i)
+        _hline(p, 5 + i, LW - 6 - i, LH - 6 - i)
+        _vline(p, 5 + i, LH - 6 - i, 5 + i)
+        _vline(p, 5 + i, LH - 6 - i, LW - 6 - i)
+    _hline(p, 13, LW - 14, 13)
+    _hline(p, 13, LW - 14, LH - 14)
+    _vline(p, 13, LH - 14, 13)
+    _vline(p, 13, LH - 14, LW - 14)
+    # titles (shrinks on narrow/portrait orientations)
+    ts = 4 if LW >= 380 else 2
+    ss = 2 if LW >= 380 else 1
+    draw_text(p, "PICO E-INK", _center_x("PICO E-INK", ts), 40,
+              size=ts, width=LW)
+    draw_text(p, "SYSTEM MONITOR", _center_x("SYSTEM MONITOR", ts), 40 + 44,
+              size=ts, width=LW)
+    # rule + tagline + features
+    _hline(p, 70, LW - 71, 130)
+    draw_text(p, "LIVE PC STATS ON E-PAPER",
+              _center_x("LIVE PC STATS ON E-PAPER", ss), 142,
+              size=ss, width=LW)
+    draw_text(p, "CPU - RAM - GPU - TEMP",
+              _center_x("CPU - RAM - GPU - TEMP", ss), 142 + 22,
+              size=ss, width=LW)
+    # little bar-chart motif
+    heights = (10, 18, 26, 18, 10)
+    bw, gap = 10, 8
+    total = len(heights) * bw + (len(heights) - 1) * gap
+    x0 = (LW - total) // 2
+    base = LH - 22
+    for i, h in enumerate(heights):
+        bx = x0 + i * (bw + gap)
+        for dx in range(bw):
+            _vline(p, base - h, base, bx + dx)
+    _hline(p, x0 - 6, x0 + total + 5, base + 2)
+    show_buffer()
 
 
 def _try_boot_text():
@@ -195,21 +292,22 @@ def _try_boot_frame():
 
 
 def boot_render():
-    """On boot: show whatever was last SAVEd (text preferred by default)."""
-    pref = "text"
+    """Boot screen: SAVEd content if any, else the project splash."""
+    pref = None
     try:
         with open(PREF_FILE) as f:
             pref = f.read().strip()
     except OSError:
         pass
-    if pref == "img":
-        if _try_boot_frame():
-            return
-        _try_boot_text()
-    else:
-        if _try_boot_text():
-            return
-        _try_boot_frame()
+    if pref is not None:
+        # some content was explicitly SAVEd: honour it (pref kind first)
+        if pref == "img":
+            if _try_boot_frame() or _try_boot_text():
+                return
+        else:
+            if _try_boot_text() or _try_boot_frame():
+                return
+    draw_splash()
 
 
 def cmd_text(args):
@@ -260,15 +358,16 @@ def cmd_rot(args):
 
 def handle(line):
     """Run one command. Returns True to keep serving, False to exit."""
-    global last
+    global last, fast, partials, rendered_once
     cmd, _, args = line.partition(" ")
     cmd = cmd.upper()
     if cmd == "PING":
         print("OK PONG")
     elif cmd == "STAT":
-        print("OK MEM=%d FW=%s PROTO=%s LAST=%s ROT=%d SIZE=%dx%d"
+        print("OK MEM=%d FW=%s PROTO=%s LAST=%s ROT=%d SIZE=%dx%d FAST=%s PARTIALS=%d/%d"
               % (gc.mem_free(), sys.version.split(";")[0].strip(), PROTO,
-                 "none" if last is None else last[0], rot, LW, LH))
+                 "none" if last is None else last[0], rot, LW, LH,
+                 "on" if fast else "off", partials, FULL_EVERY))
     elif cmd == "TEXT":
         cmd_text(args)
         print("OK TEXT")
@@ -277,17 +376,39 @@ def handle(line):
         print("OK IMG %dx%d" % (LW, LH))
     elif cmd == "CLEAR":
         epd.clear()
-        epd.display()
+        epd.display(partial=False)  # blanking: always full
         last = None
+        partials = 0
+        rendered_once = True
         print("OK CLEAR")
     elif cmd == "INIT":
         epd.init()
+        rendered_once = False  # panel RAM state unknown: next render is full
         print("OK INIT")
     elif cmd == "SAVE":
         cmd_save(args)
     elif cmd == "ROT":
         cmd_rot(args)
         print("OK ROT=%d SIZE=%dx%d" % (rot, LW, LH))
+    elif cmd == "FAST":
+        arg = args.strip().upper()
+        if arg in ("ON", "OFF"):
+            fast = arg == "ON"
+            save_fast()
+        print("OK FAST=%s (full every %d partials)" % ("ON" if fast else "OFF", FULL_EVERY))
+    elif cmd == "FULL":
+        if last is None:
+            raise ValueError("nothing rendered yet")
+        saved, fast = fast, False  # force one full refresh
+        try:
+            if last[0] == "text":
+                render_text(last[1], last[2], last[3])
+            else:
+                render_frame(last[1])
+        finally:
+            fast = saved
+        partials = 0
+        print("OK FULL")
     elif cmd == "RESET":
         print("OK RESET")
         sys.stdout.flush()
@@ -302,7 +423,7 @@ def handle(line):
         machine.deepsleep()
     elif cmd == "HELP":
         print("OK PING STAT TEXT x y hex IMG n crc hex CLEAR INIT SAVE "
-              "ROT 0|90|180|270 RESET SLEEP [sec] HELP EXIT")
+              "ROT 0|90|180|270 FAST ON|OFF FULL RESET SLEEP [sec] HELP EXIT")
     elif cmd == "EXIT":
         print("OK BYE")
         return False
@@ -315,10 +436,11 @@ def serve():
     """Boot entry point: init panel, render saved content, serve commands."""
     global epd
     load_rot()
+    load_fast()
     epd = EPD()
     epd.init()
-    boot_render()
-    print("EINK SERVER %s READY ROT=%d SIZE=%dx%d" % (PROTO, rot, LW, LH))
+    boot_render()  # full refresh: syncs the panel's previous-RAM baseline
+    print("EINK SERVER %s READY ROT=%d SIZE=%dx%d FAST=%s" % (PROTO, rot, LW, LH, "on" if fast else "off"))
     while True:
         try:
             line = sys.stdin.readline()

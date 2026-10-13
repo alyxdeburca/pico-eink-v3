@@ -59,8 +59,12 @@ Notes:
 - `--size` is a convenience that prepends one `[SIZE:n]` tag.
 - Images are converted on the PC (grayscale → 1-bit) and streamed as
   packed rows, so any format PIL reads works (PNG/JPEG/BMP/…).
-- `save` writes the last rendered content; on boot the Pico shows it
+- `save` writes the last rendered content; a subsequent boot shows it
   (`/display.txt` for text, `/frame.raw` for images, choice in `/boot.pref`).
+  **Without saved content the panel shows a built-in splash screen**
+  ("PICO E-INK — SYSTEM MONITOR") at boot. With the sysmon service
+  enabled, the splash is visible only briefly before the service clears
+  the panel and draws the dashboard.
   See the rotation section below — the default orientation is rotated.
 - The tool soft-reboots the Pico automatically if it finds the REPL
   instead of the server — you can freely mix `einkctl` and `mpremote`.
@@ -117,7 +121,9 @@ The Pico applies the rotation when blitting; senders don't rotate.
     python3 sysmon.py --once          # single update and exit
 
 Renders a bar-gauge dashboard (bars are '#' filled / '-' empty) sized to
-stay within 90% of the panel width, clear of the damaged edge. GPU usage
+stay within 90% of the panel width, clear of the damaged edge, with the
+current PC time two lines below the stats. The panel is cleared (full
+refresh) once when the service starts. GPU usage
 comes from `nvidia-smi` when available, otherwise from the drm fdinfo
 counters in /proc (Intel/AMD, no root needed — the first cycle shows
 "--" until a delta exists). CPU temperature comes from psutil sensors.

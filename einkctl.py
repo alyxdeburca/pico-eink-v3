@@ -133,7 +133,7 @@ class Eink:
                     self.reopen()
                 except serial.SerialException:
                     pass
-                time.sleep(0.5)
+                time.sleep(2)  # let any in-flight soft reboot settle
             self.log("recovery attempt %d" % (attempt + 1))
             try:
                 banner = self.recover()
@@ -349,6 +349,10 @@ def run(e, args):
         e.refresh_info()
     elif a == "save":
         print(e.cmd("SAVE"))
+    elif a == "full":
+        print(e.cmd("FULL", timeout=60))
+    elif a == "fast":
+        print(e.cmd("FAST %s" % ("ON" if args.state == "on" else "OFF")))
     elif a == "reset":
         print(e.cmd("RESET"))
         print("rebooting; reopening port...")
@@ -386,6 +390,10 @@ def main():
     sub.add_parser("clear", help="blank the panel to white")
     sub.add_parser("init", help="re-init the panel controller")
     sub.add_parser("save", help="persist last rendered content across reboots")
+    sub.add_parser("full", help="force one full (ghost-clearing) refresh")
+    p = sub.add_parser("fast", help="partial-refresh mode (persisted)")
+    p.add_argument("state", choices=("on", "off"),
+                   help="on = 0.35s no-flash partial updates")
     sub.add_parser("demo", help="show a test pattern")
     sub.add_parser("repl", help="stop the server, free the port for the REPL")
 

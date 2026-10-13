@@ -151,6 +151,9 @@ def build_text(s, lw, x):
         extra.append("TMP %dC" % s["temp"])
     extra.append("RAM " + s["ram_str"])
     lines.append(fit("  ".join(extra), maxc2))
+    # current PC time, two lines below the last entry
+    lines.append("")
+    lines.append(fit("TIME " + time.strftime("%H:%M:%S"), maxc2))
     return "\n".join(lines)
 
 
@@ -168,12 +171,17 @@ def main():
     psutil.cpu_percent(interval=None)  # prime the per-call delta
     gpu = Gpu()
     dev = None
+    need_clear = True  # full screen clear after the first connection
     while True:
         t0 = time.monotonic()
         try:
             if dev is None:
                 dev = Eink(find_port(a.port))
                 dev.wake()
+                if need_clear:
+                    reply = dev.cmd("CLEAR", timeout=30)
+                    print(time.strftime("%H:%M:%S"), reply)
+                    need_clear = False
             text = build_text(sample(gpu), dev.lw, a.x)
             reply = dev.cmd(text_payload(text, None, a.x, a.y), timeout=60)
             print(time.strftime("%H:%M:%S"), reply)

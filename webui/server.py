@@ -204,7 +204,7 @@ def op_rotate(deg):
     return device_call(f)
 
 
-def op_command(cmd, seconds=0):
+def op_command(cmd, seconds=0, value=""):
     if cmd == "clear":
         line, tmo = "CLEAR", 30
     elif cmd == "demo":
@@ -216,6 +216,10 @@ def op_command(cmd, seconds=0):
         line, tmo = "EXIT", 10
     elif cmd == "reset":
         line, tmo = "RESET", 10
+    elif cmd == "full":
+        line, tmo = "FULL", 30
+    elif cmd == "fast":
+        line, tmo = "FAST %s" % ("ON" if value == "on" else "OFF"), 10
     elif cmd == "sleep":
         line, tmo = ("SLEEP %d" % seconds if seconds else "SLEEP"), 10
     else:
@@ -330,7 +334,8 @@ class Handler(BaseHTTPRequestHandler):
             return op_rotate(int(body.get("deg", 0)))
         if route == "/api/command":
             return op_command(body.get("cmd", ""),
-                              int(body.get("seconds") or 0))
+                              int(body.get("seconds") or 0),
+                              str(body.get("value", "")).lower())
         raise DeviceError("unknown endpoint %s" % route)
 
 

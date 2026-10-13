@@ -50,42 +50,85 @@ class EPD:
         time.sleep_ms(20)
 
     def init(self):
+        # GxEPD2-style init for GDEY037T03 (UC8253): reset + panel setting.
+        # Power/timing defaults come from OTP; power is applied per refresh.
         self.reset()
         self.wait()
-
-        self.cmd(0x00)
-        self.data(0x1f)
-
-        self.cmd(0x01)
-        self.data(0x03)
-        self.data(0x00)
-        self.data(0x2b)
-        self.data(0x2b)
-
-        self.cmd(0x06)
-        self.data(0x27)
-        self.data(0x27)
-        self.data(0x27)
-
-        self.cmd(0x04)
-        self.wait()
-
-        self.cmd(0x00)
-        self.data(0x1f)
-
-        self.cmd(0x61)
-        self.data(0xf0)
-        self.data(0x01)
-        self.data(0xa0)
-
-        self.cmd(0x50)
-        self.data(0x97)
-
-        self.cmd(0x60)
-        self.data(0x22)
+        self.cmd(0x00)   # panel setting
+        self.data(0x1f)  # KW: 3f, KWR: 2F, BWROTP: 0f, BWOTP: 1f
+        self.data(0x0d)
 
     def clear(self):
         self.buffer = bytearray([0xFF] * self.buffer_size)
+
+    def _write_frame(self, cmd, buf):
+        """Stream a full frame buffer after a data command."""
+        self.cmd(cmd)
+        for i in range(0, len(buf), 4096):
+            self.data(buf[i:i + 4096])
+
+    def _refresh(self, tsset, cdi):
+        """Run one refresh cycle with the UC8253 fast-waveform settings.
+
+        tsset: 0xE5 forced-temperature/timing code (0x5A ~1.0s full,
+        0x6E partial). cdi: 0x50 VCOM/data-interval value (0x97 full,
+        0xD7 partial). TSFIX is undone afterwards by re-sending the
+        panel setting, exactly like GxEPD2 does.
+        """
+        self.cmd(0xE0)   # cascade setting (CCSET)
+        self.data(0x02)  # TSFIX
+        self.cmd(0xE5)   # force temperature (TSSET)
+        self.data(tsset)
+        self.cmd(0x50)   # VCOM and data interval
+        self.data(cdi)
+        self.cmd(0x04)   # power on
+        self.wait()
+        self.cmd(0x12)   # display refresh
+        time.sleep_ms(100)
+        self.wait()
+        self.cmd(0x02)   # power off
+        self.wait()
+        self.cmd(0x00)   # panel setting: undo TSFIX
+        self.data(0x1f)
+        self.data(0x0d)
+
+    def _partial_window(self):
+        """0x90 partial window covering the full panel (GxEPD2-style)."""
+        x, y, w, h = 0, 0, self.width, self.height
+        xe = (x + w - 1) | 0x07
+        ye = y + h - 1
+        x &= 0xFFF8
+        self.cmd(0x90)
+        self.data(x)
+        self.data(xe)
+        self.data(y >> 8)
+        self.data(y & 0xFF)
+        self.data(ye >> 8)
+        self.data(ye & 0xFF)
+        self.data(0x01)
+
+    def _win_write(self, cmd, buf):
+        """Write a frame inside a partial-in/partial-out window."""
+        self.cmd(0x91)  # partial in
+        self._partial_window()
+        self._write_frame(cmd, buf)
+        self.cmd(0x92)  # partial out
+
+    def display(self, partial=False):
+        """Show self.buffer. partial=True uses the 0.35s differential
+        waveform (requires the previous frame still in the panel's
+        'previous' RAM, which every refresh here keeps in sync)."""
+        if partial:
+            self._win_write(0x13, self.buffer)    # set current
+            self.cmd(0x91)                        # partial in
+            self._partial_window()
+            self._refresh(0x6E, 0xD7)
+            self.cmd(0x92)                        # partial out
+            self._win_write(0x10, self.buffer)    # sync previous RAM
+        else:
+            self._write_frame(0x13, self.buffer)  # set current
+            self._write_frame(0x10, self.buffer)  # old = new: clean full
+            self._refresh(0x5A, 0x97)
 
     def set_pixel(self, x, y, color):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
@@ -122,20 +165,3 @@ class EPD:
                     err += dy
                 y0 += sy
         self.set_pixel(x0, y0, color)
-
-    def display(self):
-        self.cmd(0x10)
-        self.data(0x00)
-        self.data(0x00)
-        self.data(0x00)
-        self.data(0x00)
-        self.cmd(0x11)
-        self.cmd(0x13)
-
-        for i in range(0, len(self.buffer), 4096):
-            chunk = self.buffer[i:i+4096]
-            self.data(chunk)
-
-        self.cmd(0x12)
-        time.sleep_ms(100)
-        self.wait()
