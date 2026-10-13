@@ -102,21 +102,38 @@ class Eink:
         self.send_line(line)
         return self.read_reply(time.time() + timeout)
 
+    def ping(self, timeout=6):
+        """PING with reply validation: any OK line other than OK PONG is a
+        stale reply from an earlier session — swallow it and retry."""
+        for _ in range(4):
+            reply = self.cmd("PING", timeout=timeout)
+            if reply == "OK PONG":
+                return True
+            self.log("unexpected reply to PING (%s); draining and retrying"
+                     % reply)
+            self.drain(0.4)
+        return False
+
     def wake(self):
         """Make sure the Pico-side server is up; recover into it if not."""
         self.drain()
         try:
             # long enough to cover a fresh boot's content render (~4s)
-            reply = self.cmd("PING", timeout=6)
+            if self.ping(timeout=6):
+                self.refresh_info()
+                return
         except serial.SerialException as ex:
             self.log("port error on first ping (%s); reopening" % ex)
             time.sleep(1.5)
             self.reopen()
-            reply = "ERR"
-        if reply.startswith("OK"):
-            self.refresh_info()
-            return
         for attempt in range(4):
+            if attempt:
+                # a fresh open clears kernel-side link state after glitches
+                try:
+                    self.reopen()
+                except serial.SerialException:
+                    pass
+                time.sleep(0.5)
             self.log("recovery attempt %d" % (attempt + 1))
             try:
                 banner = self.recover()
@@ -130,10 +147,10 @@ class Eink:
                 banner = False
             if banner:
                 try:
-                    reply = self.cmd("PING", timeout=5)
+                    ok = self.ping(timeout=5)
                 except serial.SerialException:
-                    reply = "ERR"
-                if reply.startswith("OK"):
+                    ok = False
+                if ok:
                     self.log("server is up")
                     self.refresh_info()
                     return
@@ -168,14 +185,18 @@ class Eink:
 
     def refresh_info(self):
         """Learn the device's rotation and logical content size (STAT)."""
-        reply = self.cmd("STAT", timeout=10)
-        m = re.search(r"ROT=(\d+) SIZE=(\d+)x(\d+)", reply)
-        if m:
-            self.rot = int(m.group(1))
-            self.lw, self.lh = int(m.group(2)), int(m.group(3))
-        else:
-            self.rot, self.lw, self.lh = 0, PANEL_W, PANEL_H
-        self.log("device: rot=%d logical=%dx%d" % (self.rot, self.lw, self.lh))
+        for _ in range(3):
+            reply = self.cmd("STAT", timeout=10)
+            m = re.search(r"ROT=(\d+) SIZE=(\d+)x(\d+)", reply)
+            if m:
+                self.rot = int(m.group(1))
+                self.lw, self.lh = int(m.group(2)), int(m.group(3))
+                self.log("device: rot=%d logical=%dx%d"
+                         % (self.rot, self.lw, self.lh))
+                return
+            self.log("unparseable STAT reply (%s); draining and retrying"
+                     % reply)
+            self.drain(0.4)
 
 
 # ---------------------------------------------------------------- payloads
@@ -199,6 +220,20 @@ def pil_to_frame(img, lw, lh, dither=True, scale="fit"):
     """
     from PIL import Image
 
+    if img.mode == "RGBA" or img.mode == "LA" or (
+            img.mode == "P" and "transparency" in img.info):
+        # composite transparency over white instead of dropping alpha
+        # (dropping it paints transparent regions with their raw RGB,
+        # which is black for most PNGs)
+        img = img.convert("RGBA")
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        img = Image.alpha_composite(bg, img)
+    elif img.mode == "CMYK":
+        img = img.convert("RGB")  # avoid channel-inverted grayscale
+    elif img.mode in ("I;16", "I", "F"):
+        lo, hi = img.getextrema()
+        if hi > 255:  # scale down to 0-255 instead of clipping to white
+            img = img.point(lambda v, hi=hi: v * 255.0 / hi)
     img = img.convert("L")
     w, h = img.size
     if scale == "stretch":

@@ -110,9 +110,69 @@ over the **logical** size from `STAT` (416×240 when rotated); a **0 bit
 is black**. Add a CRC to every frame — `binascii.crc32(data) & 0xFFFFFFFF`.
 The Pico applies the rotation when blitting; senders don't rotate.
 
+## System monitor (live dashboard)
+
+    python3 sysmon.py                 # CPU / RAM / GPU usage every 10 s
+    python3 sysmon.py --interval 5    # faster refresh
+    python3 sysmon.py --once          # single update and exit
+
+Renders a bar-gauge dashboard (bars are '#' filled / '-' empty) sized to
+stay within 90% of the panel width, clear of the damaged edge. GPU usage
+comes from `nvidia-smi` when available, otherwise from the drm fdinfo
+counters in /proc (Intel/AMD, no root needed — the first cycle shows
+"--" until a delta exists). CPU temperature comes from psutil sensors.
+Uses the serial port exclusively: stop the web UI / einkctl first.
+
+Font note: `pico/simple_font.py` gained `%`, `/` and a solid block `#`
+glyph for this (re-upload it if you haven't since).
+
+## Run at boot (systemd)
+
+`systemd/eink-sysmon.service` keeps the dashboard updating from boot
+(ports: `--interval 10` inside the unit). The repo's `.venv` is what
+the service runs from — create it once:
+
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+Install and enable:
+
+    sudo cp systemd/eink-sysmon.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now eink-sysmon.service
+    journalctl -u eink-sysmon -f        # follow the log
+
+The unit runs as your user with `SupplementaryGroups=uucp` (serial
+access without depending on login groups), restarts on failure, and
+tolerates the Pico being unplugged (it retries each cycle). Remember
+the serial port is exclusive — `systemctl stop eink-sysmon` before
+using the web UI or einkctl.
+
+## Web UI (browser control)
+
+Even easier than the CLI:
+
+    python3 webui/server.py        # opens http://127.0.0.1:8515 in your browser
+
+Features: live text preview rendered with the device's real 5×8 font,
+drag-&-drop image conversion (same Pillow dithering pipeline as the
+CLI, preview = exactly what the panel will show), clear/demo/save/
+reset/REPL buttons, and a rotation selector. The server needs only the
+Python standard library (pyserial/Pillow come via einkctl) and talks to
+the Pico through the same serial protocol.
+
+Notes:
+
+- It binds to `127.0.0.1` by default (`--host` to change). Don't expose
+  it to untrusted networks — there's no authentication.
+- The serial port is exclusive: stop the web UI (or the CLI) before
+  using the other.
+- `--port 8515` is the HTTP port (8080 is often taken), `--serial`
+  overrides port auto-detection, `--no-browser` skips auto-open.
+
 ## Repo layout
 
     einkctl.py      PC-side CLI (this is what you run)
+    webui/          browser UI: server.py + static/ (html/js/css)
     pico/           files that live on the Pico (main.py boots server.py)
     pico-backup/    untouched copies of the pre-rewrite code, kept for reference
 

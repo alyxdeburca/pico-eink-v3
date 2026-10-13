@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-Ink Control</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>E-Ink Control</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="status-text">connecting…</span></div>
+</header>
+
+<main>
+  <section class="panel controls">
+    <nav class="tabs">
+      <button class="tab active" data-tab="text">Text</button>
+      <button class="tab" data-tab="image">Image</button>
+    </nav>
+
+    <div id="tab-text" class="tabpage">
+      <textarea id="text" rows="7" spellcheck="false"
+        placeholder="Type here…&#10;&#10;Inline [SIZE:3] tags change font size."></textarea>
+      <div class="row">
+        <label>Size <input id="tsize" type="number" min="1" max="5" value="2"></label>
+        <label>X <input id="tx" type="number" value="20"></label>
+        <label>Y <input id="ty" type="number" value="50"></label>
+      </div>
+      <div class="row">
+        <button id="send-text" class="primary">Send text</button>
+      </div>
+      <p class="hint">Preview updates as you type. Device font is 5×8, uppercased.
+      Keep clear of the damaged edge (right side at rotation 270).</p>
+    </div>
+
+    <div id="tab-image" class="tabpage hidden">
+      <div id="drop" class="drop">
+        Drop an image here<br><span class="small">or</span><br>
+        <input id="imgfile" type="file" accept="image/*">
+      </div>
+      <div class="row">
+        <label>Scale
+          <select id="iscale">
+            <option value="fit">fit</option>
+            <option value="stretch">stretch</option>
+            <option value="none">1:1</option>
+          </select>
+        </label>
+        <label>Rotate
+          <select id="irotate">
+            <option>0</option><option>90</option>
+            <option>180</option><option>270</option>
+          </select>
+        </label>
+      </div>
+      <div class="row checks">
+        <label><input id="idither" type="checkbox" checked> dither</label>
+        <label><input id="iinvert" type="checkbox"> invert</label>
+        <label><input id="iauto" type="checkbox"> send right away</label>
+      </div>
+      <div class="row">
+        <button id="convert">Convert &amp; preview</button>
+        <button id="send-image" class="primary" disabled>Send to display</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="b-clear">Clear</button>
+      <button id="b-demo">Demo</button>
+      <button id="b-save">Save</button>
+      <button id="b-reset">Reset</button>
+      <button id="b-repl">REPL</button>
+    </div>
+    <div class="row">
+      <label>Rotation
+        <select id="rot">
+          <option>0</option><option>90</option>
+          <option>180</option><option>270</option>
+        </select>
+      </label>
+      <button id="b-refresh">Refresh status</button>
+    </div>
+  </section>
+
+  <section class="panel previewpane">
+    <div class="paper"><img id="preview" alt="preview"></div>
+    <p class="hint">Preview = the logical content, i.e. what you see after
+    turning the panel. Damaged edge lands on the side shown in the status bar.</p>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

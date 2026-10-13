@@ -1,0 +1,33 @@
+# E-ink system monitor — Pico W dashboard over USB serial
+#
+# Install (system service, starts at boot):
+#   sudo cp systemd/eink-sysmon.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now eink-sysmon.service
+#   journalctl -u eink-sysmon -f
+#
+# Notes:
+# - Runs as User=alyx with SupplementaryGroups=uucp for serial-port access,
+#   independent of the user's login groups.
+# - The Pico does not need to be plugged in at boot: sysmon retries every
+#   cycle until it shows up.
+# - The serial port is exclusive: stop this service (systemctl stop
+#   eink-sysmon) before using the web UI or einkctl, and vice versa.
+
+[Unit]
+Description=E-ink system monitor (Pico W dashboard)
+After=multi-user.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=alyx
+SupplementaryGroups=uucp
+WorkingDirectory=/home/alyx/git/pico-eink-v3
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/alyx/git/pico-eink-v3/.venv/bin/python3 /home/alyx/git/pico-eink-v3/sysmon.py --interval 10
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
