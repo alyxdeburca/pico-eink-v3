@@ -204,9 +204,11 @@ def op_rotate(deg):
     return device_call(f)
 
 
-def op_command(cmd, seconds=0, value=""):
+def op_command(cmd, seconds=0, value="", x=0, y=0, w=0, h=0):
     if cmd == "clear":
         line, tmo = "CLEAR", 30
+    elif cmd == "clr":
+        line, tmo = "CLR %d %d %d %d" % (x, y, w, h), 30
     elif cmd == "demo":
         line, tmo = einkctl.frame_command(
             einkctl.build_demo(INFO["lw"], INFO["lh"])), 60
@@ -335,7 +337,11 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/command":
             return op_command(body.get("cmd", ""),
                               int(body.get("seconds") or 0),
-                              str(body.get("value", "")).lower())
+                              str(body.get("value", "")).lower(),
+                              int(body.get("x") or 0),
+                              int(body.get("y") or 0),
+                              int(body.get("w") or 0),
+                              int(body.get("h") or 0))
         raise DeviceError("unknown endpoint %s" % route)
 
 

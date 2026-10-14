@@ -118,12 +118,27 @@ The Pico applies the rotation when blitting; senders don't rotate.
 
     python3 sysmon.py                 # CPU / RAM / GPU usage every 10 s
     python3 sysmon.py --interval 5    # faster refresh
-    python3 sysmon.py --once          # single update and exit
+    python3 sysmon.py                    # CPU / RAM / GPU usage every 10 s
+    python3 sysmon.py --interval 5       # faster refresh
+    python3 sysmon.py --refresh-every 60 # ghost wipe less often
+    python3 sysmon.py --refresh-every 0  # periodic full refresh off
+    python3 sysmon.py --once             # single update and exit
 
 Renders a bar-gauge dashboard (bars are '#' filled / '-' empty) sized to
 stay within 90% of the panel width, clear of the damaged edge, with the
-current PC time two lines below the stats. The panel is cleared (full
-refresh) once when the service starts. GPU usage
+system stats plus an ambient block: clock + date, local weather
+(Open-Meteo, **no API key** — located by IP; override with `--lat` /
+`--lon`), sunrise/sunset, moon phase, uptime and disk usage. Weather
+refreshes every 30 min and is cached in `~/.cache/pico-eink/`
+(offline it falls back to "WEATHER --" and a locally-computed moon
+phase). The panel is cleared once when the service starts. Updates use
+fast partial refresh restricted to the rectangle that actually changed —
+and when nothing changed, the panel is left alone entirely — so the
+screen is static between updates. By default every 30 s a full refresh
+wipes accumulated ghosting in a single flash with the dashboard staying
+visible (no white-out; tune with `--refresh-every`, disable with
+`--refresh-every 0` — the device also auto-full-refreshes every 10
+partial updates as a safety net). GPU usage
 comes from `nvidia-smi` when available, otherwise from the drm fdinfo
 counters in /proc (Intel/AMD, no root needed — the first cycle shows
 "--" until a delta exists). CPU temperature comes from psutil sensors.
@@ -135,7 +150,7 @@ glyph for this (re-upload it if you haven't since).
 ## Run at boot (systemd)
 
 `systemd/eink-sysmon.service` keeps the dashboard updating from boot
-(ports: `--interval 10` inside the unit). The repo's `.venv` is what
+(`--interval 20` inside the unit). The repo's `.venv` is what
 the service runs from — create it once:
 
     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt

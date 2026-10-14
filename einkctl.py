@@ -92,9 +92,11 @@ class Eink:
             raw = self.s.readline()
             if raw:
                 line = raw.decode(errors="replace").strip()
-                if line.startswith(("OK", "ERR")):
+                if line.startswith("WARN"):
+                    print(line, file=sys.stderr)  # device-side warning
+                elif line.startswith(("OK", "ERR")):
                     return line
-                if line:
+                elif line:
                     self.log("noise: " + line)
         return "ERR timeout waiting for reply"
 
@@ -323,6 +325,9 @@ def run(e, args):
         print(e.cmd("PING"))
     elif a == "clear":
         print(e.cmd("CLEAR", timeout=30))
+    elif a == "cleararea":
+        print(e.cmd("CLR %d %d %d %d" % (args.x, args.y, args.w, args.h),
+                    timeout=30))
     elif a == "init":
         print(e.cmd("INIT", timeout=30))
     elif a in ("text", "file"):
@@ -388,6 +393,12 @@ def main():
     sub.add_parser("status", help="query Pico memory/firmware/last content")
     sub.add_parser("ping", help="check the server is alive")
     sub.add_parser("clear", help="blank the panel to white")
+    p = sub.add_parser("cleararea",
+                       help="clear a rectangle (logical x y w h), partial refresh")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    p.add_argument("w", type=int)
+    p.add_argument("h", type=int)
     sub.add_parser("init", help="re-init the panel controller")
     sub.add_parser("save", help="persist last rendered content across reboots")
     sub.add_parser("full", help="force one full (ghost-clearing) refresh")

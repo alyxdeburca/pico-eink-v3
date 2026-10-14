@@ -10,7 +10,7 @@ class EPD:
         self.cs = machine.Pin(15, machine.Pin.OUT)
         self.dc = machine.Pin(10, machine.Pin.OUT)
         self.res = machine.Pin(8, machine.Pin.OUT)
-        self.busy = machine.Pin(7, machine.Pin.IN)
+        self.busy = machine.Pin(7, machine.Pin.IN, machine.Pin.PULL_UP)
 
         self.spi = machine.SPI(0, baudrate=4000000, polarity=0, phase=0,
                               sck=machine.Pin(18), mosi=machine.Pin(19))
@@ -59,7 +59,10 @@ class EPD:
         self.data(0x0d)
 
     def clear(self):
-        self.buffer = bytearray([0xFF] * self.buffer_size)
+        # bytes multiply (1 byte/slot) instead of [0xFF]*n: a list on the
+        # 32-bit RP2040 port costs 4 bytes/slot and can fail to find one
+        # contiguous 50 KB block once the heap is fragmented
+        self.buffer = bytearray(b"\xff" * self.buffer_size)
 
     def _write_frame(self, cmd, buf):
         """Stream a full frame buffer after a data command."""
@@ -67,14 +70,44 @@ class EPD:
         for i in range(0, len(buf), 4096):
             self.data(buf[i:i + 4096])
 
+    def wait_refresh(self, floor_ms, timeout_ms=5000):
+        """Wait for a display refresh to finish, tolerating a flaky or
+        disconnected BUSY line.
+
+        Once BUSY asserts (panel drives the line low) it is trusted:
+        wait until it has stayed released for ~40ms. If it never asserts
+        within floor_ms the panel is not responding — warn (the floor has
+        then covered the waveform time, so the refresh is not cut short).
+        """
+        t0 = time.ticks_ms()
+        highs = 0
+        saw_low = False
+        while True:
+            el = time.ticks_diff(time.ticks_ms(), t0)
+            if self.busy.value() == 0:
+                saw_low = True
+                highs = 0
+            else:
+                highs += 1
+                if saw_low and el >= 300 and highs >= 4:
+                    return
+            if not saw_low and el >= floor_ms:
+                print("WARN: panel BUSY not asserted (wiring / panel power?)")
+                return
+            if el >= timeout_ms:
+                print("WARN: busy timeout after %dms" % el)
+                return
+            time.sleep_ms(10)
+
     def _refresh(self, tsset, cdi):
         """Run one refresh cycle with the UC8253 fast-waveform settings.
 
-        tsset: 0xE5 forced-temperature/timing code (0x5A ~1.0s full,
-        0x6E partial). cdi: 0x50 VCOM/data-interval value (0x97 full,
-        0xD7 partial). TSFIX is undone afterwards by re-sending the
+        tsset: 0xE5 forced-temperature/timing code (0x5A full, ~0.5s busy;
+        0x6E partial, ~0.35s). cdi: 0x50 VCOM/data-interval value (0x97
+        full, 0xD7 partial). TSFIX is undone afterwards by re-sending the
         panel setting, exactly like GxEPD2 does.
         """
+        full = tsset == 0x5A
         self.cmd(0xE0)   # cascade setting (CCSET)
         self.data(0x02)  # TSFIX
         self.cmd(0xE5)   # force temperature (TSSET)
@@ -82,11 +115,12 @@ class EPD:
         self.cmd(0x50)   # VCOM and data interval
         self.data(cdi)
         self.cmd(0x04)   # power on
+        time.sleep_ms(60)  # min pump-up even if BUSY reads flaky
         self.wait()
         self.cmd(0x12)   # display refresh
-        time.sleep_ms(100)
-        self.wait()
+        self.wait_refresh(1000 if full else 600)
         self.cmd(0x02)   # power off
+        time.sleep_ms(100)  # min pump-down
         self.wait()
         self.cmd(0x00)   # panel setting: undo TSFIX
         self.data(0x1f)
@@ -129,6 +163,113 @@ class EPD:
             self._write_frame(0x13, self.buffer)  # set current
             self._write_frame(0x10, self.buffer)  # old = new: clean full
             self._refresh(0x5A, 0x97)
+
+    def fill_rect(self, x, y, w, h, color):
+        """Fill a physical-space rectangle. color: 1=black, 0=white."""
+        w = max(0, min(w, self.width - x))
+        h = max(0, min(h, self.height - y))
+        if w == 0 or h == 0 or x < 0 or y < 0:
+            return
+        x0b, x1b = x >> 3, (x + w - 1) >> 3
+        lead = 0xFF >> (x & 7)
+        trail = (0xFF >> (((x + w - 1) & 7) + 1)) ^ 0xFF
+        rowbytes = self.width >> 3
+        for yy in range(y, y + h):
+            base = yy * rowbytes
+            for bi in range(x0b, x1b + 1):
+                if bi == x0b and bi == x1b:
+                    m = lead & trail
+                elif bi == x0b:
+                    m = lead
+                elif bi == x1b:
+                    m = trail
+                else:
+                    m = 0xFF
+                if color:
+                    self.buffer[base + bi] &= m ^ 0xFF
+                else:
+                    self.buffer[base + bi] |= m
+
+    def _window(self, x0, xe, y0, ye):
+        """0x90 partial window from pre-aligned coordinates."""
+        self.cmd(0x90)
+        self.data(x0)
+        self.data(xe)
+        self.data(y0 >> 8)
+        self.data(y0 & 0xFF)
+        self.data(ye >> 8)
+        self.data(ye & 0xFF)
+        self.data(0x01)
+
+    def _stream(self, cmd, chunks):
+        """Send a data command with CS held low across all chunks."""
+        self.cmd(cmd)
+        self.dc.value(1)
+        self.cs.value(0)
+        for c in chunks:
+            self.spi.write(bytes(c))
+        self.cs.value(1)
+
+    def _window_rows(self, x0, wb, y, h):
+        """Frame-buffer slices covering a window, one tuple of bytes per row."""
+        rowbytes = self.width >> 3
+        base = y * rowbytes + (x0 >> 3)
+        return [self.buffer[base + i * rowbytes: base + i * rowbytes + wb]
+                for i in range(h)]
+
+    def display_window(self, x, y, w, h, partial=True):
+        """Refresh only a physical-space rectangle of the panel.
+
+        Writes the window's pixels to the current RAM, runs the refresh
+        with the window active, then syncs the same window into the
+        previous RAM so later full-window partials stay correct.
+        """
+        x0 = x & 0xFFF8
+        xe = (x + w - 1) | 0x07
+        wb = (xe - x0 + 1) >> 3
+        y1 = max(0, y)
+        h = min(h, self.height - y1)
+        if wb <= 0 or h <= 0:
+            return
+        rows = self._window_rows(x0, wb, y1, h)
+        self.cmd(0x91)  # partial in
+        self._window(x0, xe, y1, y1 + h - 1)
+        self._stream(0x13, rows)
+        self.cmd(0x92)  # partial out
+        self.cmd(0x91)
+        self._window(x0, xe, y1, y1 + h - 1)
+        self._refresh(0x6E if partial else 0x5A,
+                      0xD7 if partial else 0x97)
+        self.cmd(0x92)
+        self.cmd(0x91)
+        self._window(x0, xe, y1, y1 + h - 1)
+        self._stream(0x10, rows)
+        self.cmd(0x92)
+
+    def dirty_window(self, prev, cur):
+        """Tight byte-aligned physical rect of differences between two
+        frame buffers, or None when they are identical."""
+        rowbytes = self.width >> 3
+        ymin = -1
+        ymax = -1
+        xb0 = rowbytes
+        xb1 = -1
+        for y in range(self.height):
+            base = y * rowbytes
+            if prev[base:base + rowbytes] == cur[base:base + rowbytes]:
+                continue
+            if ymin < 0:
+                ymin = y
+            ymax = y
+            for xb in range(rowbytes):
+                if prev[base + xb] != cur[base + xb]:
+                    if xb < xb0:
+                        xb0 = xb
+                    if xb > xb1:
+                        xb1 = xb
+        if ymin < 0:
+            return None
+        return (xb0 << 3, ymin, (xb1 - xb0 + 1) << 3, ymax - ymin + 1)
 
     def set_pixel(self, x, y, color):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:

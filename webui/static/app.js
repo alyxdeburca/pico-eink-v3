@@ -140,10 +140,13 @@ async function sendImage() {
 
 /* -------------------------------------------------------------- commands */
 
-async function command(name, seconds, value) {
+async function command(name, seconds, value, x, y, w, h) {
   setBusy(true);
   try {
-    const j = await api("/api/command", { cmd: name, seconds: seconds || 0, value: value || "" });
+    const j = await api("/api/command", {
+      cmd: name, seconds: seconds || 0, value: value || "",
+      x: x || 0, y: y || 0, w: w || 0, h: h || 0,
+    });
     note(j.ok, j.reply, j.error);
     if (name === "reset") await new Promise((r) => setTimeout(r, 5000));
     if (name === "repl") DEV.connected = false;
@@ -193,6 +196,9 @@ $("send-text").onclick = sendText;
 $("convert").onclick = convertImage;
 $("send-image").onclick = sendImage;
 $("b-clear").onclick = () => command("clear");
+$("b-clr").onclick = () => command("clr", 0, "",
+                                   +$("crx").value, +$("cry").value,
+                                   +$("crw").value, +$("crh").value);
 $("b-demo").onclick = () => command("demo");
 $("b-save").onclick = () => command("save");
 $("b-full").onclick = () => command("full");

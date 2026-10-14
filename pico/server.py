@@ -64,6 +64,9 @@ FAST_FILE = "/fast.cfg"
 DEFAULT_ROT = 270  # damaged panel edge moved out of the way; see README
 ROTATIONS = (0, 90, 180, 270)
 FULL_EVERY = 10    # partial renders between automatic full (ghost-clear) refreshes
+# dirty rectangles larger than 60% of the panel use the normal full-window
+# partial refresh instead of a window (no benefit, proven path)
+DIRTY_MAX_AREA = (PANEL_W * PANEL_H * 3) // 5
 
 epd = None
 last = None  # ("text", str, x, y) or ("frame", bytes)
@@ -72,6 +75,7 @@ LW, LH = PANEL_W, PANEL_H  # logical (content) dimensions; set by set_rot()
 fast = True      # partial (0.35s) refresh instead of full (~1.5s)
 partials = 0     # partial renders since the last full refresh
 rendered_once = False  # False until a full refresh has synced the panel RAM
+prev_buf = None  # physical frame before the current render (dirty-rect diff)
 
 
 def set_rot(n):
@@ -124,11 +128,25 @@ def show_buffer():
 
     Partial (0.35s, no flash) whenever fast mode is on and the panel
     RAM is in sync; every FULL_EVERY partials (and after boot/INIT/
-    CLEAR) a full refresh keeps ghosting in check.
+    CLEAR) a full refresh keeps ghosting in check. When the previous
+    frame is known, only the changed rectangle is refreshed — the
+    blink is then confined to the pixels that actually moved, and if
+    nothing changed at all the panel is left alone.
     """
-    global partials, rendered_once
+    global partials, rendered_once, prev_buf
+    prev, prev_buf = prev_buf, None
     if fast and rendered_once and partials < FULL_EVERY:
-        epd.display(partial=True)
+        if prev is not None:
+            rect = epd.dirty_window(prev, epd.buffer)
+            if rect is None:
+                return  # nothing changed: skip the refresh entirely
+            if rect[2] * rect[3] <= DIRTY_MAX_AREA:
+                epd.display_window(rect[0], rect[1], rect[2], rect[3],
+                                   partial=True)
+                partials += 1
+                gc.collect()
+                return
+        epd.display(partial=True)  # big or unknown change: full window
         partials += 1
     else:
         epd.display(partial=False)
@@ -159,7 +177,8 @@ class RotPainter:
 
 
 def render_text(text, x=TEXT_X, y=TEXT_Y):
-    global last
+    global last, prev_buf
+    prev_buf = bytes(epd.buffer)  # for the dirty-rect diff in show_buffer
     text = text.upper()
     epd.clear()
     draw_text(RotPainter(epd), text, x, y, size=1, width=LW)
@@ -197,7 +216,8 @@ def blit_frame(data):
 
 
 def render_frame(data):
-    global last
+    global last, prev_buf
+    prev_buf = bytes(epd.buffer)  # for the dirty-rect diff in show_buffer
     epd.buffer = blit_frame(data)
     show_buffer()
     last = ("frame", data)
@@ -356,6 +376,30 @@ def cmd_rot(args):
                 render_frame(last[1])
 
 
+def cmd_clr(args):
+    """Clear (white-fill) a logical rectangle and refresh only that window."""
+    global last
+    x_s, y_s, w_s, h_s = args.split(" ", 3)
+    u0, v0, w, h = int(x_s), int(y_s), int(w_s), int(h_s)
+    u0 = max(0, min(u0, LW - 1))
+    v0 = max(0, min(v0, LH - 1))
+    w = max(1, min(w, LW - u0))
+    h = max(1, min(h, LH - v0))
+    u1, v1 = u0 + w - 1, v0 + h - 1
+    # logical rect -> physical rect for the current rotation
+    if rot == 90:
+        px, py, pw, ph = PANEL_W - 1 - v1, u0, h, w
+    elif rot == 180:
+        px, py, pw, ph = PANEL_W - 1 - u1, PANEL_H - 1 - v1, w, h
+    elif rot == 270:
+        px, py, pw, ph = v0, PANEL_H - 1 - u1, h, w
+    else:
+        px, py, pw, ph = u0, v0, w, h
+    epd.fill_rect(px, py, pw, ph, 0)  # white
+    epd.display_window(px, py, pw, ph, partial=fast)
+    last = None  # content no longer matches the tracked text/frame
+
+
 def handle(line):
     """Run one command. Returns True to keep serving, False to exit."""
     global last, fast, partials, rendered_once
@@ -390,6 +434,9 @@ def handle(line):
     elif cmd == "ROT":
         cmd_rot(args)
         print("OK ROT=%d SIZE=%dx%d" % (rot, LW, LH))
+    elif cmd == "CLR":
+        cmd_clr(args)
+        print("OK CLR")
     elif cmd == "FAST":
         arg = args.strip().upper()
         if arg in ("ON", "OFF"):
@@ -422,8 +469,9 @@ def handle(line):
             machine.deepsleep(secs * 1000)
         machine.deepsleep()
     elif cmd == "HELP":
-        print("OK PING STAT TEXT x y hex IMG n crc hex CLEAR INIT SAVE "
-              "ROT 0|90|180|270 FAST ON|OFF FULL RESET SLEEP [sec] HELP EXIT")
+        print("OK PING STAT TEXT x y hex IMG n crc hex CLEAR CLR x y w h "
+              "INIT SAVE ROT 0|90|180|270 FAST ON|OFF FULL RESET SLEEP [sec] "
+              "HELP EXIT")
     elif cmd == "EXIT":
         print("OK BYE")
         return False

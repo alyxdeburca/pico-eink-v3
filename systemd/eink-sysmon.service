@@ -25,7 +25,7 @@ User=alyx
 SupplementaryGroups=uucp
 WorkingDirectory=/home/alyx/git/pico-eink-v3
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/alyx/git/pico-eink-v3/.venv/bin/python3 /home/alyx/git/pico-eink-v3/sysmon.py --interval 20
+ExecStart=/home/alyx/git/pico-eink-v3/.venv/bin/python3 /home/alyx/git/pico-eink-v3/sysmon.py --interval 20 --lat 53.3342 --lon -8.3358
 Restart=always
 RestartSec=5
 
